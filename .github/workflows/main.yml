@@ -1,0 +1,63 @@
+import nltk
+import random
+from transformers import pipeline
+from nltk.tokenize import word_tokenize
+
+class AIOrHumanScorer():
+    """
+    Score text that may have been produced by a generative model.
+    """
+
+    def __init__(self, model: object, mask_filler="bert-base-uncased"):
+        self.model = model
+        self.mask_fill = pipeline("fill-mask", model=mask_filler)
+        self.labels = ["human", "auto"]
+        nltk.download("punkt")
+        nltk.download("stopwords")
+        self.stop_words = set(nltk.corpus.stopwords.words("english"))
+
+    def _mask_fill(self, text: str, mask_ratio=0.15, max_tokens=512, random_state=42) -> tuple:
+        """
+        This function computes a mask fill score for a text sample. This score is
+        computed by randomly masking words in the text and checking how well a mask
+        fill model can predict the masked words. Returns a tuple of
+        (true_tokens, pred_tokens).
+        """
+
+        # Truncate to ensure the text is within the token limit
+        tokens = word_tokenize(text)[:max_tokens]
+
+        # Randomly select words to mask, ignoring stopwords
+        random.seed(random_state)
+        candidates = [(i, t) for i, t in enumerate(tokens) if t.lower() not in self.stop_words and t.isalnum() and len(t.strip()) > 1]
+        if len(candidates) == 0:
+            raise ValueError("No valid tokens after stopword removal.")
+
+        n_mask = int(len(candidates) * mask_ratio)
+        if n_mask == 0:
+            n_mask = 1
+
+        # Mask the target words
+        targets = sorted(random.sample(candidates, n_mask), key=lambda x: x[0])
+        masked_tokens = [t[1] for t in targets]
+        masked_text = ''
+        for i, token in enumerate(tokens):
+            if len(targets) > 0 and token == targets[0][1]:
+                masked_text += '[MASK] '
+                targets.pop(0)
+            else:
+                masked_text += token + ' '
+
+        # Get the mask fill predictions
+        fill_preds = [f['token_str'] for f in self.mask_fill(masked_text, tokenizer_kwargs={'truncation': True})[0]]
+        return masked_tokens, fill_preds
+
+    def score(self, text: str, mask_fill_threshold=0.4) -> float:
+        """
+        Return a dict of scores that represents how likely the text was produced by a
+        generative model.
+        """
+
+        # Compute the mask fill score
+        true_tokens, pred_tokens = self._mask_fill(text)
+        return sum([1 for t, p in zip(true_tokens, pred_tokens) if t == p]) / len(true_tokens)
